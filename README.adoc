@@ -1,31 +1,25 @@
-= Reactive-vertx
-
-image:https://img.shields.io/badge/vert.x-3.7.1-purple.svg[link="https://vertx.io"]
-
-This application was generated using http://start.vertx.io
+= Kafka with Vert.x in Docker
 
 == Building
 
-To launch your tests:
+To launch the Application:
 ```
-./mvnw clean test
-```
-
-To package your application:
-```
-./mvnw clean package
+docker-compose up
 ```
 
-To run your application:
+To test the Application:
 ```
-./mvnw clean compile exec:java
+curl localhost:8080/kafka
+
+curl -d 'my test data' -H "Content-Type: application/json" -X POST localhost:8080/event
 ```
 
-== Help
+The result shout be:
+```
+event: kafkaqueue
+data: my test data
 
-* https://vertx.io/docs/[Vert.x Documentation]
-* https://stackoverflow.com/questions/tagged/vert.x?sort=newest&pageSize=15[Vert.x Stack Overflow]
-* https://groups.google.com/forum/?fromgroups#!forum/vertx[Vert.x User Group]
-* https://gitter.im/eclipse-vertx/vertx-users[Vert.x Gitter]
+```
+
 
 
