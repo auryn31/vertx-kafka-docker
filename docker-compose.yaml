@@ -1,0 +1,41 @@
+version: '3'
+services:
+  zookeeper:
+    build: ./zookeeper
+    image: aengel/zookeeper
+    networks:
+      docker_network:
+        aliases:
+          - zookeeper
+  kafka:
+    build: ./kafka
+    image: aengel/kafka 
+    depends_on: 
+      - zookeeper
+    links:
+      - zookeeper
+    # ports:
+    #   - "9092:9092"
+    networks:
+      docker_network:
+        aliases:
+          - kafka
+  server:
+    build: ./backend
+    image: aengel/server 
+    depends_on: 
+      - kafka
+    links:
+      - kafka
+    ports:
+      - "8080:8080"
+    networks:
+      docker_network:
+        aliases:
+          - server
+
+
+networks:
+  docker_network:
+    ipam:
+      driver: default
