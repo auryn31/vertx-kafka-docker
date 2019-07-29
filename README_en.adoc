@@ -1,0 +1,201 @@
+= Kafka with Vert.x in Docker
+
+image::https://img.shields.io/badge/vert.x-0.0.1-green[]
+
+== Building
+
+To launch the Application:
+```
+docker-compose up
+```
+
+To test the Application:
+```
+curl localhost:8080/kafka
+
+curl -d 'my test data' -H "Content-Type: application/json" -X POST localhost:8080/event
+```
+
+The result shout be:
+```
+event: kafkaqueue
+data: my test data
+
+```
+
+== What's Kafka?
+Apache Kafka is an open source software that provides data streams over a distributed streaming platform. It provides various interfaces to write and read in a Kafka cluster. It was originally developed by LinkedIn as a news broker and spread rapidly. It is now used in many large systems because it can process and make available large amounts of data in real-time. The biggest advantage here is that the data can be stored and thus the queues can hold the data for a finite to infinite time. If, for example, several microservices communicate via Kafka queues, one microservice can fail and the data is not lost because it is held in the queue until the microservice has processed it. Even under load. Here, a slower service can process the data over time without slowing down the other services. More detailed articles that deal with Kafka can be found here.
+
+== Take Kafka to Docker
+To start Kafka with Docker, we can either use the much-used image of Wurstmeister, or we can write our own. For practice purposes, we will write our own Docker image that contains Kafka. 
+
+To use Kafka, we also need zookeepers. Kafka's `.zip` contains both Zookeeper and Kafka. A description of how to use kafka is here(https://kafka.apache.org/quickstart). 
+
+So we can build the image now.
+
+```
+
+FROM ubuntu:19.10
+
+RUN apt-get update
+RUN apt -y install wget
+RUN apt-get -y install default-jdk
+RUN wget https://www-eu.apache.org/dist/kafka/2.2.0/kafka_2.12-2.2.0.tgz
+RUN tar -xzf kafka_2.12-2.2.0.tgz
+RUN rm kafka_2.12-2.2.0.tgz
+COPY server.properties /kafka_2.12-2.2.0/config/server.properties
+WORKDIR /kafka_2.12-2.2.0
+
+CMD [ "bin/kafka-server-start.sh", "config/server.properties" ]
+```
+
+We use a default ubuntu image, download wget and install Java. Then we download the kafka.zip and unzip it. We also copy the configuration file for Kafka. Here we adapt the following things:
+
+```
+listeners=PLAINTEXT://0.0.0.0:9092
+
+advertised.listeners=PLAINTEXT://kafka:9092
+
+zookeeper.connect=zookeeper:2181
+```
+
+Here we set the listener to 0.0.0.0 so it listens to everything in the docker. The advertised.listeners is set to kafka, so it listens to its own URL. Furthermore, we set the zookeeper.connect propertie to zookeeper:2181, which is the URL we later specify in the docker-compose for zookeeper.
+
+Now we create the docker-compose.yml to merge everything and can start Kafka already. It looks like this:
+
+```
+version: '3'
+services:
+  zookeeper:
+    build: ./zookeeper
+    image: aengel/zookeeper
+    networks:
+      docker_network:
+        aliases:
+          - zookeeper
+  kafka:
+    build: ./kafka
+    image: aengel/kafka 
+    depends_on: 
+      - zookeeper
+    links:
+      - zookeeper
+    networks:
+      docker_network:
+        aliases:
+          - kafka
+  server:
+    build: ./backend
+    image: aengel/server 
+    depends_on: 
+      - kafka
+    links:
+      - kafka
+    ports:
+      - "8080:8080"
+    networks:
+      docker_network:
+        aliases:
+          - server
+
+
+networks:
+  docker_network:
+    ipam:
+      driver: default
+```
+
+Here we define ourselves Kafka, Zookepper and our server. How we build it is shown in the following section.
+
+== Build Vert.x with Docker
+
+Vert.x itself we can easily build with maven. So we'll use it to write an image containing maven and java to build and run the application.
+This will look like this:
+
+```
+FROM ubuntu:19.10
+
+RUN apt-get update
+RUN apt-get -y install default-jdk
+RUN apt-get -y install maven
+COPY src /server/src
+COPY pom.xml /server/pom.xml
+COPY .mvn /server/.mvn
+COPY mvnw /server/mvnw
+COPY mvnw.cmd /server/mvnw.cmd
+COPY vertx.iml /server/vertx.iml
+RUN mvn install -f /server/pom.xml
+WORKDIR /server
+
+CMD java -jar target/vertx-0.0.1-fat.jar
+```
+
+We install java again and then maven. Then we copy all necessary files and build the service with maven. As start value we simply define a java -jar with the built jar.
+
+So that's it.
+
+== Server
+The server is developed with Kotlin and Vert.x in the example. You can find the detailed source code as always on my Github.
+
+To register for a queue, all we need to do is give us the config and the dependency on Kafka. Since Vert.x already has a library for Kafka, it makes it very easy for us:
+
+```
+val config = HashMap<String, String>()
+config["bootstrap.servers"] = "kafka:9092"
+config["key.deserializer"] = "org.apache.kafka.common.serialization.StringDeserializer"
+config["value.deserializer"] = "org.apache.kafka.common.serialization.StringDeserializer"
+config["group.id"] = "my_group"
+config["auto.offset.reset"] = "latest" //earliest --> startet am anfang
+config["enable.auto.commit"] = "false"
+
+val consumer: KafkaConsumer<String, String> = KafkaConsumer.create(vertx, config)
+consumer.subscribe("kafkaqueue")
+
+consumer.handler{
+        println(it.value())
+      }
+```
+
+Here we enter the parameters where the Kafka service is located and on which queue we want to subscribe. Then we can already listen and get the events into the handler when there is something new in the queue.
+
+If we want to write into the queue, it looks quite similar:
+
+```
+val config_producer = HashMap<String, String>()
+config_producer["bootstrap.servers"] = "kafka:9092"
+config_producer["key.serializer"] = "org.apache.kafka.common.serialization.StringSerializer"
+config_producer["value.serializer"] = "org.apache.kafka.common.serialization.StringSerializer"
+config_producer["acks"] = "1"
+
+val producer: KafkaProducer<String, String> = KafkaProducer.create(vertx, config_producer)
+
+val record: KafkaProducerRecord<String, String> = KafkaProducerRecord.create("kafkaqueue", "content")
+producer.write(record)
+```
+
+We will show you a configuration and a producer. With this we can write records into the queue. 
+
+That's it to write and read queues with Vert.x in Kafka.
+
+== Start the environment
+Now we can simply start the environment with a `docker-compose up`. This will build the containers and lift them up. After that we should be able to execute the following commands:
+
+`curl localhost:8080/kafka`
+
+This should simply be a blocking request that we don't see yet. Let's start a second terminal and send content with `curl -d 'my test data' -H "Content-Type: application/json" -X POST localhost:8080/event` the following answer should appear at the first window: 
+
+```
+event: kafkaqueue
+data: my test data
+
+```
+
+The data now goes through a queue in Kafka and is sent to the registered clients.
+
+== Summary and evaluation
+
+As we have seen, it is quite easy to write a service that registers to a Kafka queue and sends or reads the data it contains. The data will not be lost and can be retrieved at a later time. The data is also piped through in real time from the sender to the receiver. This allows us to build a robust messaging system in a short time, which is error tolerant against service failures and can handle large amounts of data. It becomes exciting when the services are developed in different languages and communicate with each other via Kafka queues. In this way, we create a system that makes independent development easier and more stable.
+
+All in all, Kafka is a very useful and now well established system for processing large quantities of events. Especially in combination with Microservices, stable event handling becomes meaningful and important. But not only here, but also with systems that generate large amounts of event data, it can serve as an upstream system. For example, Kafka can record the event data on machines, filter it and then only make the relevant data available in queues for slower downstream processing.
+
+If you have any questions, feel free to ask them. If you liked the article, leave me some applause. 

@@ -1,5 +1,7 @@
 = Kafka with Vert.x in Docker
 
+image::https://img.shields.io/badge/vert.x-0.0.1-green[]
+
 == Building
 
 To launch the Application:
@@ -22,4 +24,177 @@ data: my test data
 ```
 
 
+== Was ist Kafka?
+Apache Kafka ist eine Open Source Software welche Datenströme über eine verteile Streaming-Plattform zur verfügung stellt. Sie stellt verschiedene Schnittstellen bereit um in ein Kafka-Cluster zu schreiben und zu lesen.Sie wurde ursprünglich von LinkedIn als Nachrichtenbroker entwickelt und verbreitete sich schnell. Mittlerweile findet sie in vielen großen Systemen anwendung, da sie in real-time hohe Datenmengen verarbeiten und zur verfügung stellen kann. Der größte Vorteil hier ist, dass die Daten gespeichert werden können und somit die Queues die Daten für eine endliche bis unendliche Zeit vorhalten können. Kommunizieren beispielsweise mehrere Microservices über Kafka Queues, kann ein Microservice ausfallen, und die Daten gehen nicht verloren, da sie in der Queue gehalten werden, bis der Microservice sie verarbeitet hat. So auch bei Last. Hier kann ein langsamerer Service die Daten im laufe der Zeit verarbeiten, und bremst dabei nicht die anderen Services aus. Ausführlichere Artikel, die sich mit Kafka auseinander setzen lassen sich aber reichlich finden.
 
+== Bring Kafka in Docker
+Um Kafka mit Docker zu starten, können wir entweder das viel benutzte Image von Wurstmeister nutzen, oder wir schreiben uns ein eigenes. Zu Übungszwecken, werden wir uns ein eigenes Dockerimage schreiben, welche Kafka enthält. 
+
+Um Kafka zu verwenden, brauchen wir außerdem Zookeeper. Die `.zip` von Kafka enthält sowohl Zookeeper als auch Kafka. Beschrieben wie man kafka nutzt ist hier(https://kafka.apache.org/quickstart). 
+
+So können wir das Image nun aufbauen.
+
+```
+
+FROM ubuntu:19.10
+
+RUN apt-get update
+RUN apt -y install wget
+RUN apt-get -y install default-jdk
+RUN wget https://www-eu.apache.org/dist/kafka/2.2.0/kafka_2.12-2.2.0.tgz
+RUN tar -xzf kafka_2.12-2.2.0.tgz
+RUN rm kafka_2.12-2.2.0.tgz
+COPY server.properties /kafka_2.12-2.2.0/config/server.properties
+WORKDIR /kafka_2.12-2.2.0
+
+CMD [ "bin/kafka-server-start.sh", "config/server.properties" ]
+```
+
+Wir nutzen ein default ubuntu Image, laden uns wget und installieren Java. Danach laden wir die kafka.zip und entpacken sie. Außerdem kopieren wir uns die Konfigurationsdatei für Kafka. Hier passen wir folgende Sachen an:
+
+```
+listeners=PLAINTEXT://0.0.0.0:9092
+
+advertised.listeners=PLAINTEXT://kafka:9092
+
+zookeeper.connect=zookeeper:2181
+```
+
+Hier setzen wir den Listener auf 0.0.0.0, damit es im Docker auf alles hört. Der advertised.listeners wird auf kafka gesetzt, sodass er auf seine eigene URL hört. Weiterhin setzen wir noch die zookeeper.connect propertie auf zookeeper:2181, welches die URL ist, die wir später im docker-compose für zookeeper angeben.
+
+Nun erzeugen wir noch die docker-compose.yml um alles zusammen zu führen und können auch schon Kafka starten. Die sieht folgendermaßen aus:
+
+```
+version: '3'
+services:
+  zookeeper:
+    build: ./zookeeper
+    image: aengel/zookeeper
+    networks:
+      docker_network:
+        aliases:
+          - zookeeper
+  kafka:
+    build: ./kafka
+    image: aengel/kafka 
+    depends_on: 
+      - zookeeper
+    links:
+      - zookeeper
+    networks:
+      docker_network:
+        aliases:
+          - kafka
+  server:
+    build: ./backend
+    image: aengel/server 
+    depends_on: 
+      - kafka
+    links:
+      - kafka
+    ports:
+      - "8080:8080"
+    networks:
+      docker_network:
+        aliases:
+          - server
+
+
+networks:
+  docker_network:
+    ipam:
+      driver: default
+```
+
+Hier definieren wir uns Kafka, Zookepper und unseren Server. Wie wir den bauen, sehen wir im folgenden Abschnitt.
+
+== Build Vert.x with Docker
+Vert.x selbst können wir einfach mit maven bauen. Also werden wir das nutzen und uns ein Image schreiben, welches maven und java enthält und damit die Applikation bauen und starten.
+Das sieht dann folgendermaßen aus:
+
+```
+FROM ubuntu:19.10
+
+RUN apt-get update
+RUN apt-get -y install default-jdk
+RUN apt-get -y install maven
+COPY src /server/src
+COPY pom.xml /server/pom.xml
+COPY .mvn /server/.mvn
+COPY mvnw /server/mvnw
+COPY mvnw.cmd /server/mvnw.cmd
+COPY vertx.iml /server/vertx.iml
+RUN mvn install -f /server/pom.xml
+WORKDIR /server
+
+CMD java -jar target/vertx-0.0.1-fat.jar
+```
+
+Wir installieren wieder java und dann noch maven. danach kopieren wir uns alle notwendigen Dateien und bauen dann den Service mit maven. Als startwert definieren wir uns einfach ein java -jar mit der gebauten jar.
+
+Damit wars das auch schon.
+
+== Server
+Der Server wird im Beispiel mit Kotlin und Vert.x entwickelt. Den ausführlichen Source Code findet ihr wie immer auf meinem Github.
+
+Um uns auf eine Queue zu registrieren, brauchen wir nur die Konfig mitgeben und die Abhängigkeit von Kafka. Da Vert.x schon eine Bibliothek für Kafka hat, macht es uns das sehr einfach:
+
+```
+val config = HashMap<String, String>()
+config["bootstrap.servers"] = "kafka:9092"
+config["key.deserializer"] = "org.apache.kafka.common.serialization.StringDeserializer"
+config["value.deserializer"] = "org.apache.kafka.common.serialization.StringDeserializer"
+config["group.id"] = "my_group"
+config["auto.offset.reset"] = "latest" //earliest --> startet am anfang
+config["enable.auto.commit"] = "false"
+
+val consumer: KafkaConsumer<String, String> = KafkaConsumer.create(vertx, config)
+consumer.subscribe("kafkaqueue")
+
+consumer.handler{
+        println(it.value())
+      }
+```
+
+Hier geben wir die Parameter ein, wo sich der Kafka Service befindet und auf welche Queue wir uns subscriben wollen. Danach können wir auch schon lauschen und bekommen die Events in den Handler gereicht, wenn etwas neues in der Queue ist.
+
+Wollen wir in die Queue schreiben, sieht das recht ähnlich aus:
+
+```
+val config_producer = HashMap<String, String>()
+config_producer["bootstrap.servers"] = "kafka:9092"
+config_producer["key.serializer"] = "org.apache.kafka.common.serialization.StringSerializer"
+config_producer["value.serializer"] = "org.apache.kafka.common.serialization.StringSerializer"
+config_producer["acks"] = "1"
+
+val producer: KafkaProducer<String, String> = KafkaProducer.create(vertx, config_producer)
+
+val record: KafkaProducerRecord<String, String> = KafkaProducerRecord.create("kafkaqueue", "content")
+producer.write(record)
+```
+
+Wir erzeigen wirder eine Konfiguration und damit einen Producer. Damit können wir dann Records in die Queue schreiben. 
+
+Das wars auch schon um mit Vert.x in Kafka Queues zu schreiben und daraus zu lesen.
+
+== Starten der Umgebung
+Starten können wir die Umgebung nun einfach mit einem `docker-compose up`. Damit werden die Container gebaut und hochgefahren. Danach sollten wir in der Lage sein folgende Befehle auszuführen:
+
+`curl localhost:8080/kafka`
+
+Das sollte einfach ein blockender Request sein, bei dem wir noch nicht sehen. Starten wir nun ein zweites Terminal und senden Inhalt mit `curl -d 'my test data' -H "Content-Type: application/json" -X POST localhost:8080/event` sollte folgene Antwort bei dem ersten Fenster erscheinen: 
+```
+event: kafkaqueue
+data: my test data
+
+```
+
+Die Daten gehen nun über eine Queue in Kafka und werden an die registrierten Clients gesendet.
+
+== Zusammenfassung und Auswertung
+
+Wie wir gesehen haben, kann man recht einfach einen Service schreiben, welcher sich auf eine Kafka Queue registriert und die darin enthaltenen Daten sendet oder liest. Die Daten gehen in dem Fall nicht verloren und können auch zu einem späteren Zeitpunkt noch abgerufen werden. Außerdem werden die Daten in Echtzeit vom Sender bis zum Empfänger durchgepiped. Damit können wir in kurzer Zeit ein robustet Messanging System aufbauen, welches Fehlertollerant gegen ausfälle von Services ist und große Datenmengen handeln kann. Spannend wird es, wenn die Serices in verschiedenen Sprachen entwickelt werden und über Kafka Queues miteinander kommunizieren. So schaffen wir ein System, welches ein unabhängiges Entwickeln einfacher macht und trotz dessen stabiler.
+
+Alles in allem ist Kafka ein sehr sinnvolles und mittlerweile sehr etabliertes System um große Eventmengen zu verarbeiten. Gerade im zusammenspiel mit Microservices wird stabiles Eventhandling sinnvoll und wichtig. Aber nicht nur hier, auch bei Systemen, die große Mengen an Eventdaten erzeugen, kann es als vorgelagertes System dienen. Beispielsweise kann Kafka die Event-Daten Maschienen aufnehmen, filtern und dann nur die relevanten Daten in Queues zur langsameren weiterverarbeitung nachgelagerten Services zur verfügung stellen.
+
+Wenn du Fragen hast, stell sie gern. Hat dir der Artikel gefallen, lass mir doch Applaus da. 

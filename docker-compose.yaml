@@ -14,8 +14,6 @@ services:
       - zookeeper
     links:
       - zookeeper
-    # ports:
-    #   - "9092:9092"
     networks:
       docker_network:
         aliases:
